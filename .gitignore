@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Camera output
+*.jpg
+*.jpeg
+*.png
+*.mp4
+
+# Environment files
+.env
+
+# Audio files
+*.mp3
+
+# YOLO model
+yolov8n.pt

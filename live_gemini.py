@@ -5,6 +5,7 @@ from speech import speak
 from translator import translate_text
 import os
 from dotenv import load_dotenv
+import time
 
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
@@ -15,7 +16,7 @@ client = genai.Client(api_key=API_KEY)
 # Select Language
 # ==============================
 
-SELECTED_LANGUAGE = "Hindi"
+SELECTED_LANGUAGE = "Kannada"
 
 # Available:
 # English

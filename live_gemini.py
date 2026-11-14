@@ -1,150 +1,216 @@
-from picamera2 import Picamera2
+
+import os
+import re
+import time
+from io import BytesIO
+
+from dotenv import load_dotenv
 from google import genai
+from picamera2 import Picamera2
 from PIL import Image
 from speech import speak
-from translator import translate_text
-import os
-from dotenv import load_dotenv
-import time
+
+# ---------------- SETTINGS ----------------
+
+MODEL = "gemini-flash-lite-latest"
+OUTPUT_LANGUAGE = "Kannada"
+
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
+
+VOICEOVER_PAUSE = 5
+JPEG_QUALITY = 75
+
+# ------------------------------------------
 
 load_dotenv()
-API_KEY = os.getenv("GEMINI_API_KEY")
 
-client = genai.Client(api_key=API_KEY)
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    raise RuntimeError(
+        "GEMINI_API_KEY is missing. Check your .env file."
+    )
 
-# ==============================
-# Select Language
-# ==============================
+client = genai.Client(api_key=api_key)
 
-SELECTED_LANGUAGE = "Kannada"
 
-# Available:
-# English
-# Hindi
-# Kannada
-# Tamil
-# Telugu
-# Malayalam
-# Marathi
-# Bengali
-# Gujarati
-# Punjabi
+def analyze_scene(frame):
+    """Return an English description and simple Kannada translation."""
 
-# ==============================
-# Camera
-# ==============================
+    image = Image.fromarray(frame)
 
-picam2 = Picamera2()
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=JPEG_QUALITY)
+    image_bytes = buffer.getvalue()
 
-config = picam2.create_still_configuration(
-    main={"size": (1920, 1080)}
-)
+    prompt = """
+You are SightSense, an assistive vision system for a blind person.
 
-picam2.configure(config)
-picam2.start()
+Look carefully at the supplied camera image.
 
-time.sleep(2)
+Return exactly these two lines:
+ENGLISH: <short English description>
+KANNADA: <simple everyday Kannada description>
 
-os.makedirs("images", exist_ok=True)
+ENGLISH:
+- Use clear, short sentences.
+- Mention important nearby objects and where they are.
+- Prioritize obstacles, steps, doors, people and possible hazards.
+- Do not invent objects or claim a path is safe without evidence.
+- Keep it concise, ideally under 25 words.
+- Mention uncertainty if the image is unclear.
 
-print("=" * 50)
-print("SightSense Started")
-print("Selected Language:", SELECTED_LANGUAGE)
-print("=" * 50)
+KANNADA:
+- Use natural, simple Kannada spoken in everyday life.
+- Use words ordinary Kannada speakers understand easily.
+- Avoid formal, literary, textbook or complicated words.
+- Avoid unnecessarily long sentences.
+- Speak like a helpful person guiding someone who is blind.
+- Clearly mention important objects, their positions and visible hazards.
+- Translate naturally, not word-for-word.
+- Do not add information that is not visible.
+- Use Kannada script.
+- Keep it short enough to understand when heard once.
 
-previous_response = ""
-
-prompt = """
-You are SightSense, an AI assistant for visually impaired users.
-
-Describe the surroundings naturally.
-
-Rules:
-1. Mention nearby obstacles first.
-2. Mention people and their actions.
-3. Mention important objects.
-4. Mention doors or pathways.
-5. Mention chairs and tables.
-6. Read important visible text.
-7. Keep the response under 40 words.
-8. Never guess.
-9. Speak directly to the user.
+Return only the two requested lines. No markdown or extra explanation.
 """
 
-MAX_RETRIES = 5
+    response = client.models.generate_content(
+        model=MODEL,
+        contents=[
+            prompt,
+            {
+                "inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": image_bytes,
+                }
+            },
+        ],
+        config={
+            "temperature": 0.2,
+            "max_output_tokens": 150,
+        },
+    )
 
-try:
+    result = (response.text or "").strip()
 
-    while True:
+    english_match = re.search(
+        r"ENGLISH:\s*(.*?)(?=\n\s*KANNADA:|$)",
+        result,
+        re.IGNORECASE | re.DOTALL,
+    )
 
-        print("\nCapturing image...")
+    kannada_match = re.search(
+        r"KANNADA:\s*(.*)",
+        result,
+        re.IGNORECASE | re.DOTALL,
+    )
 
-        picam2.capture_file("images/current.jpg")
+    if not english_match or not kannada_match:
+        print("Could not read Gemini response format:")
+        print(result)
+        return None, None
 
-        image = Image.open("images/current.jpg")
+    english = english_match.group(1).strip().strip('"\'` ')
+    kannada = kannada_match.group(1).strip().strip('"\'` ')
 
-        response = None
+    if not english or not kannada:
+        return None, None
 
-        for attempt in range(MAX_RETRIES):
+    return english, kannada
+
+
+def main():
+    camera = Picamera2()
+
+    camera_config = camera.create_video_configuration(
+        main={
+            "size": (CAMERA_WIDTH, CAMERA_HEIGHT),
+            "format": "RGB888",
+        },
+        buffer_count=2,
+    )
+
+    camera.configure(camera_config)
+    camera.start()
+
+    # Allow the camera sensor to settle before the first capture.
+    time.sleep(1)
+
+    print("=" * 45)
+    print("SightSense running")
+    print("Description: English")
+    print("Output language:", OUTPUT_LANGUAGE)
+    print("Voiceover pause:", VOICEOVER_PAUSE, "seconds")
+    print("Press Ctrl+C to stop.")
+    print("=" * 45)
+
+    previous_kannada = None
+
+    try:
+        while True:
+            print("\nCapturing scene...", flush=True)
+
+            # Picamera2 capture; no OpenCV VideoCapture required.
+            frame = camera.capture_array()
+
+            if frame is None or frame.size == 0:
+                print("Camera frame unavailable. Retrying...")
+                time.sleep(0.2)
+                continue
 
             try:
+                english, kannada = analyze_scene(frame)
 
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=[prompt, image]
+                if not english or not kannada:
+                    print("No usable description. Trying again.")
+                    time.sleep(0.5)
+                    continue
+
+                print("\nEnglish:")
+                print(english)
+
+                print("\nSimple Kannada:")
+                print(kannada)
+
+                normalized = " ".join(kannada.split()).strip()
+
+                # Do not repeat the same description continuously.
+                if normalized == previous_kannada:
+                    print("Same description; skipping voiceover.")
+                    time.sleep(0.5)
+                    continue
+
+                print("\nSpeaking Kannada...", flush=True)
+
+                # Assumes speak() waits until audio playback completes.
+                speak(kannada, OUTPUT_LANGUAGE)
+
+                previous_kannada = normalized
+
+                print(
+                    f"\nVoiceover complete. Pausing "
+                    f"{VOICEOVER_PAUSE} seconds...",
+                    flush=True,
                 )
 
-                break
+                # Five-second pause AFTER the voiceover finishes.
+                time.sleep(VOICEOVER_PAUSE)
 
-            except Exception as e:
+            except KeyboardInterrupt:
+                raise
+            except Exception as error:
+                print(f"Scene processing error: {error}")
+                time.sleep(1)
 
-                print(f"\nGemini Error ({attempt+1}/{MAX_RETRIES})")
-                print(e)
+    finally:
+        camera.stop()
+        camera.close()
+        print("\nSightSense stopped.")
 
-                if attempt < MAX_RETRIES - 1:
-                    print("Retrying in 5 seconds...\n")
-                    time.sleep(5)
-                else:
-                    print("Skipping this frame...\n")
 
-        if response is None:
-            continue
-
-        answer = response.text.strip()
-
-        if not answer:
-            continue
-
-        if answer != previous_response:
-
-            print("\nEnglish:")
-            print(answer)
-
-            translated_answer = translate_text(
-                answer,
-                SELECTED_LANGUAGE
-            )
-
-            print(f"\n{SELECTED_LANGUAGE}:")
-            print(translated_answer)
-
-            speak(
-                translated_answer,
-                SELECTED_LANGUAGE
-            )
-
-            previous_response = answer
-
-        else:
-
-            print("No significant scene change.")
-
-        time.sleep(5)
-
-except KeyboardInterrupt:
-
-    print("\nStopping SightSense...")
-
-finally:
-
-    picam2.stop()
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nStopping SightSense...")
